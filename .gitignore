@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+.env.migration
+firebase-service-account*.json
+*-firebase-adminsdk-*.json
+supabase-uid-map.json
+.DS_Store
