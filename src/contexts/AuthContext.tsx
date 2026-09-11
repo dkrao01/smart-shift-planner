@@ -12,6 +12,9 @@ interface AuthContextValue {
   currentUser: AppUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  signup: (name: string, email: string, password: string) => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<void>;
+  updatePassword: (password: string) => Promise<void>;
   logout: () => Promise<void>;
   isDemo: boolean;
   error: string | null;
@@ -36,7 +39,7 @@ function demoLogin(email: string, password: string): AppUser {
 async function getSupabaseUser(uid: string): Promise<AppUser | null> {
   const { data, error } = await getSupabase()
     .from('users')
-    .select('id, name, email, role, employee_id')
+    .select('id, name, email, role, employee_id, is_approved, registration_status, is_real_signup')
     .eq('id', uid)
     .maybeSingle();
   if (error) throw error;
@@ -47,6 +50,9 @@ async function getSupabaseUser(uid: string): Promise<AppUser | null> {
     email: data.email,
     role: data.role,
     employeeId: data.employee_id ?? '',
+    isApproved: data.is_approved ?? false,
+    registrationStatus: data.registration_status ?? (data.is_approved ? 'approved' : 'pending'),
+    isRealSignup: data.is_real_signup ?? false,
   } as AppUser;
 }
 
@@ -164,6 +170,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   // ── Logout ────────────────────────────────────────────────────────────────
+  async function signup(name: string, email: string, password: string) {
+    if (IS_LOCAL_DEMO_MODE) throw new Error('Sign-up is available only in the live Supabase app.');
+    if (!USE_SUPABASE) throw new Error('Live authentication is not configured.');
+    const { error } = await getSupabase().auth.signUp({ email: email.trim().toLowerCase(), password, options: { data: { full_name: name.trim() }, emailRedirectTo: window.location.origin } });
+    if (error) throw error;
+  }
+
+  async function requestPasswordReset(email: string) { if (!USE_SUPABASE) throw new Error('Password reset is available only in the live app.'); const { error } = await getSupabase().auth.resetPasswordForEmail(email.trim().toLowerCase(), { redirectTo: window.location.origin + '/reset-password' }); if (error) throw error; }
+  async function updatePassword(password: string) { if (!USE_SUPABASE) throw new Error('Password update is available only in the live app.'); const { error } = await getSupabase().auth.updateUser({ password }); if (error) throw error; }
+
   async function logout() {
     if (IS_LOCAL_DEMO_MODE) {
       sessionStorage.removeItem(DEMO_SESSION_KEY);
@@ -183,7 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ currentUser, loading, login, logout, isDemo: IS_LOCAL_DEMO_MODE, error }}>
+    <AuthContext.Provider value={{ currentUser, loading, login, signup, requestPasswordReset, updatePassword, logout, isDemo: IS_LOCAL_DEMO_MODE, error }}>
       {children}
     </AuthContext.Provider>
   );

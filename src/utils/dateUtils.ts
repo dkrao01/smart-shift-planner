@@ -1,12 +1,12 @@
 import { format, parseISO, addDays, differenceInCalendarDays, isToday, isBefore, isAfter } from 'date-fns';
 
-export function formatDate(date: string | Date, fmt = 'dd MMM yyyy'): string {
+export function formatDate(date: string | Date, fmt = 'dd-MM-yyyy'): string {
   const d = typeof date === 'string' ? parseISO(date) : date;
   return format(d, fmt);
 }
 
 export function formatShortDate(date: string): string {
-  return format(parseISO(date), 'dd MMM');
+  return format(parseISO(date), 'dd-MM-yyyy');
 }
 
 export function formatDayName(date: string): string {

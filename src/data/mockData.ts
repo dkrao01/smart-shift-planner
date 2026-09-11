@@ -6,7 +6,7 @@
 import { format, addDays } from 'date-fns';
 import type {
   AppUser, Employee, SchedulePeriod, ShiftAssignment,
-  Availability, SwapRequest, OpenShiftRequest
+  Availability, SwapRequest, OpenShiftRequest, OpenShiftPickupRequest
 } from '../types';
 
 // ─── Reference Start Date ─────────────────────────────────────────────────────
@@ -265,6 +265,13 @@ export const MOCK_OPEN_SHIFTS: OpenShiftRequest[] = [
     reason: 'Emergency leave. Need someone to cover.',
     validationWarnings: ['This shift already has only 2 assigned. Removing will cause shortage.'],
     createdAt: format(addDays(new Date(), -1), "yyyy-MM-dd'T'HH:mm:ss"),
+  },
+];
+
+export const MOCK_OPEN_SHIFT_PICKUP_REQUESTS: OpenShiftPickupRequest[] = [
+  {
+    id: 'pickup-001', openShiftId: 'open-001', employeeId: 'E008', status: 'pending',
+    createdAt: format(new Date(), "yyyy-MM-dd'T'HH:mm:ss"), validationWarnings: [],
   },
 ];
 

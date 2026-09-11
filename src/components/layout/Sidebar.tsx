@@ -1,6 +1,7 @@
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import type { NavCounts } from '../../hooks/useNavCounts';
 
 interface NavItem {
   to: string;
@@ -19,7 +20,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/settings',     icon: '≡', label: 'Rules & Info' },
 ];
 
-export function Sidebar() {
+export function Sidebar({ counts }: { counts: NavCounts }) {
   const { currentUser, logout, isDemo } = useAuth();
   const navigate = useNavigate();
 
@@ -48,7 +49,9 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-        {NAV_ITEMS.map(item => (
+        {NAV_ITEMS.map(item => {
+          const count = item.to === '/open-shifts' ? counts.openShifts : item.to === '/swaps' ? counts.swaps : 0;
+          return (
           <NavLink
             key={item.to}
             to={item.to}
@@ -64,8 +67,10 @@ export function Sidebar() {
               {item.icon}
             </span>
             {item.label}
+            {count > 0 && <span className="ml-auto min-w-5 h-5 px-1 rounded-full bg-brand-500 text-white text-[10px] leading-5 text-center font-mono">{count > 99 ? '99+' : count}</span>}
           </NavLink>
-        ))}
+          );
+        })}
       </nav>
 
       {/* User info */}

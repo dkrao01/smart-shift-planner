@@ -118,12 +118,31 @@ create table if not exists public.open_shift_requests (
   manager_note text
 );
 
+-- Every employee gets an independent application record. This deliberately
+-- avoids locking the pool after the first person applies.
+create table if not exists public.open_shift_pickup_requests (
+  id text primary key,
+  open_shift_id text not null references public.open_shift_requests(id) on delete cascade,
+  employee_id text not null references public.employees(id) on delete cascade,
+  status public.request_status not null default 'pending',
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz,
+  resolved_by uuid references auth.users(id) on delete set null,
+  manager_note text,
+  validation_warnings jsonb not null default '[]'::jsonb,
+  unique (open_shift_id, employee_id)
+);
+
+alter table public.open_shift_pickup_requests
+  add column if not exists validation_warnings jsonb not null default '[]'::jsonb;
+
 create index if not exists shift_assignments_schedule_date_idx on public.shift_assignments(schedule_id, date);
 create index if not exists shift_assignments_employee_schedule_idx on public.shift_assignments(employee_id, schedule_id);
 create index if not exists availability_employee_schedule_idx on public.availability(employee_id, schedule_id);
 create index if not exists availability_schedule_date_idx on public.availability(schedule_id, date);
 create index if not exists swap_requests_status_idx on public.swap_requests(status);
 create index if not exists open_shift_requests_status_idx on public.open_shift_requests(status);
+create index if not exists open_shift_pickup_requests_open_shift_idx on public.open_shift_pickup_requests(open_shift_id, created_at);
 
 create or replace function public.current_user_role()
 returns public.user_role
@@ -152,6 +171,7 @@ alter table public.shift_assignments enable row level security;
 alter table public.availability enable row level security;
 alter table public.swap_requests enable row level security;
 alter table public.open_shift_requests enable row level security;
+alter table public.open_shift_pickup_requests enable row level security;
 
 drop policy if exists users_self_or_manager on public.users;
 create policy users_self_or_manager on public.users
@@ -224,3 +244,35 @@ create policy open_shifts_employee_insert on public.open_shift_requests
 drop policy if exists open_shifts_manager_write on public.open_shift_requests;
 create policy open_shifts_manager_write on public.open_shift_requests
   for all to authenticated using (public.current_user_role() = 'manager') with check (public.current_user_role() = 'manager');
+
+drop policy if exists open_shift_pickups_authenticated_read on public.open_shift_pickup_requests;
+create policy open_shift_pickups_authenticated_read on public.open_shift_pickup_requests
+  for select to authenticated using (true);
+
+drop policy if exists open_shift_pickups_employee_insert on public.open_shift_pickup_requests;
+create policy open_shift_pickups_employee_insert on public.open_shift_pickup_requests
+  for insert to authenticated with check (employee_id = public.current_employee_id());
+
+drop policy if exists open_shift_pickups_manager_write on public.open_shift_pickup_requests;
+create policy open_shift_pickups_manager_write on public.open_shift_pickup_requests
+  for all to authenticated using (public.current_user_role() = 'manager') with check (public.current_user_role() = 'manager');
+
+create or replace function public.withdraw_open_shift(p_open_shift_id text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  shift_request public.open_shift_requests%rowtype;
+begin
+  select * into shift_request from public.open_shift_requests where id = p_open_shift_id for update;
+  if not found or shift_request.original_employee_id <> public.current_employee_id() or shift_request.status not in ('open', 'requested') then
+    raise exception 'Open shift cannot be withdrawn';
+  end if;
+  update public.open_shift_requests set status = 'cancelled', resolved_at = now(), manager_note = 'Open shift was withdrawn by the original employee.' where id = p_open_shift_id;
+  update public.open_shift_pickup_requests set status = 'rejected', resolved_at = now(), manager_note = 'Open shift was withdrawn by the original employee.' where open_shift_id = p_open_shift_id and status = 'pending';
+end;
+$$;
+
+grant execute on function public.withdraw_open_shift(text) to authenticated;

@@ -39,7 +39,7 @@ const RULES = [
     icon: '☀🌆🌙',
     title: 'Three Daily Shifts',
     body: 'Every working day has 3 shifts:',
-    examples: ['Day Shift: 06:00 – 14:00', 'Evening Shift: 14:00 – 22:00', 'Night Shift: 22:00 – 06:00 (next day)'],
+    examples: ['Day Shift: 07:00 – 16:00', 'Evening Shift: 16:00 – 23:00', 'Night Shift: 23:00 – 07:00 (next day)'],
   },
   {
     icon: '⚖',

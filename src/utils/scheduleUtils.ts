@@ -11,10 +11,23 @@ type CycleNumber = 1 | 2 | 3;
 
 // ─── Hours Calculations ───────────────────────────────────────────────────────
 
+/** A second consecutive shift on one date is overtime. Day+Evening and Evening+Night
+ * are allowed; the first chronological shift is the employee's normal roster shift. */
+export function isOvertimeAssignment(assignment: ShiftAssignment, assignments: ShiftAssignment[]): boolean {
+  const shiftOrder: ShiftType[] = ['day', 'evening', 'night'];
+  return assignments
+    .filter(item => item.employeeId === assignment.employeeId && item.date === assignment.date)
+    .sort((a, b) => shiftOrder.indexOf(a.shiftType) - shiftOrder.indexOf(b.shiftType))
+    .findIndex(item => item.id === assignment.id) > 0;
+}
+
+function isNormalAssignment(assignment: ShiftAssignment, assignments: ShiftAssignment[]): boolean {
+  return !isOvertimeAssignment(assignment, assignments);
+}
 /** Total hours an employee works in a given set of assignments */
 export function calculateEmployeeHours(assignments: ShiftAssignment[], employeeId: string): number {
   return assignments
-    .filter(a => a.employeeId === employeeId)
+    .filter(a => a.employeeId === employeeId && isNormalAssignment(a, assignments))
     .reduce((sum, a) => sum + a.hours, 0);
 }
 
@@ -25,7 +38,7 @@ export function calculateShiftTypeHours(
 ): Record<ShiftType, number> {
   const result: Record<ShiftType, number> = { day: 0, evening: 0, night: 0 };
   assignments
-    .filter(a => a.employeeId === employeeId)
+    .filter(a => a.employeeId === employeeId && isNormalAssignment(a, assignments))
     .forEach(a => { result[a.shiftType] += a.hours; });
   return result;
 }
@@ -39,7 +52,7 @@ export function calculateEmployeeHoursByCycle(
 ): number {
   return assignments
     .filter(a => {
-      if (a.employeeId !== employeeId) return false;
+      if (a.employeeId !== employeeId || !isNormalAssignment(a, assignments)) return false;
       const offset = dayOffset(a.date, scheduleStartDate);
       const { cycleNumber: cn } = getCycleDay(offset);
       return cn === cycleNumber;
@@ -236,14 +249,44 @@ export function getEligibleScheduleEmployees(
   return employees.filter(employee => eligibleIds.has(employee.id) && !assignedToTarget.has(employee.id));
 }
 
+function adjacentDateKey(dateKey: string, offsetDays: number): string {
+  const date = new Date(`${dateKey}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+/** A Night shift ends at 07:00, so a Day shift on the following date is prohibited. */
+export function hasNightToDayConflict(assignments: ShiftAssignment[], employeeId: string, date: string, targetShiftType: ShiftType): boolean {
+  if (targetShiftType === 'day') {
+    return assignments.some(item => item.employeeId === employeeId && item.date === adjacentDateKey(date, -1) && item.shiftType === 'night');
+  }
+  if (targetShiftType === 'night') {
+    return assignments.some(item => item.employeeId === employeeId && item.date === adjacentDateKey(date, 1) && item.shiftType === 'day');
+  }
+  return false;
+}
 export interface ScheduleEmployeeOption {
   employee: Employee;
   eligible: boolean;
-  reason: 'off' | 'assigned' | 'unassigned';
+  reason: 'off' | 'assigned' | 'unassigned' | 'incompatible';
   currentShift?: ShiftType;
+  assignedShiftTypes?: ShiftType[];
 }
 
-/** Show every employee's date status while allowing only conflict-free additions. */
+/**
+ * A person can work one shift, or exactly two adjacent shifts in a day:
+ * Day ? Evening or Evening ? Night. Day + Night and all three shifts are
+ * prohibited, even when the manager is filling an urgent shortage.
+ */
+function canAddAdjacentShift(existingShiftTypes: ShiftType[], targetShiftType: ShiftType): boolean {
+  if (existingShiftTypes.length !== 1) return false;
+  const [existing] = existingShiftTypes;
+  return (existing === 'day' && targetShiftType === 'evening')
+    || (existing === 'evening' && (targetShiftType === 'day' || targetShiftType === 'night'))
+    || (existing === 'night' && targetShiftType === 'evening');
+}
+
+/** Show every employee's date status while enforcing the consecutive-overtime rule. */
 export function getScheduleEmployeeOptions(
   assignments: ShiftAssignment[],
   employees: Employee[],
@@ -251,27 +294,41 @@ export function getScheduleEmployeeOptions(
   targetShiftType: ShiftType,
   offEmployeeIds: Set<string>
 ): ScheduleEmployeeOption[] {
-  const allowedSourceTypes: ShiftType[] = targetShiftType === 'evening'
-    ? ['day', 'night']
-    : ['evening'];
   const assignedToTarget = new Set(
     assignments.filter(a => a.date === date && a.shiftType === targetShiftType).map(a => a.employeeId)
   );
 
   return employees.flatMap((employee): ScheduleEmployeeOption[] => {
     if (assignedToTarget.has(employee.id)) return [];
+
+    if (hasNightToDayConflict(assignments, employee.id, date, targetShiftType)) {
+      return [{ employee, eligible: false, reason: 'incompatible' }];
+    }
+
     const sameDayAssignments = assignments.filter(a => a.date === date && a.employeeId === employee.id);
-    const sameDayAssignment = sameDayAssignments.find(a => allowedSourceTypes.includes(a.shiftType));
-    if (offEmployeeIds.has(employee.id)) {
-      return [{ employee, eligible: true, reason: 'off' as const, currentShift: sameDayAssignment?.shiftType }];
-    }
-    if (sameDayAssignment) {
-      return [{ employee, eligible: true, reason: 'assigned' as const, currentShift: sameDayAssignment.shiftType }];
-    }
+    const assignedShiftTypes = [...new Set(sameDayAssignments.map(a => a.shiftType))];
+
     if (sameDayAssignments.length === 0) {
-      return [{ employee, eligible: true, reason: 'unassigned' as const }];
+      return [{ employee, eligible: true, reason: offEmployeeIds.has(employee.id) ? 'off' : 'unassigned' }];
     }
-    return [];
+
+    if (canAddAdjacentShift(assignedShiftTypes, targetShiftType)) {
+      return [{
+        employee,
+        eligible: true,
+        reason: offEmployeeIds.has(employee.id) ? 'off' : 'assigned',
+        currentShift: assignedShiftTypes[0],
+        assignedShiftTypes,
+      }];
+    }
+
+    return [{
+      employee,
+      eligible: false,
+      reason: 'incompatible',
+      currentShift: assignedShiftTypes[0],
+      assignedShiftTypes,
+    }];
   });
 }
 
@@ -343,7 +400,7 @@ export function getEmployeeCycleSummary(
 ): CycleSummary[] {
   return employees.map(emp => {
     const empAssignments = assignments.filter(a => {
-      if (a.employeeId !== emp.id) return false;
+      if (a.employeeId !== emp.id || !isNormalAssignment(a, assignments)) return false;
       const offset = dayOffset(a.date, scheduleStartDate);
       const { cycleNumber: cn } = getCycleDay(offset);
       return cn === cycleNumber;

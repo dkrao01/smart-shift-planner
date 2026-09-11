@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { StatCard, Card, CardHeader } from '../components/common/Card';
+import { Button } from '../components/common/Button';
 import { LoadingSpinner, WarningBanner } from '../components/common/LoadingSpinner';
 import { Badge } from '../components/common/Badge';
 import {
   getEmployees, getAssignments, getSwapRequests,
-  getOpenShifts, getActiveSchedule
+  getOpenShifts, getActiveSchedule, getPlanningSchedule, getScheduleEmployees, grantLateAvailabilityAccess
 } from '../services/dataService';
 import {
   getDashboardSummary, validateShiftCoverage, validate48HourRule,
@@ -23,13 +24,15 @@ export default function DashboardPage() {
   const [swaps, setSwaps] = useState<SwapRequest[]>([]);
   const [openShifts, setOpenShifts] = useState<OpenShiftRequest[]>([]);
   const [schedule, setSchedule] = useState<SchedulePeriod | null>(null);
-
+  const [planningSchedule, setPlanningSchedule] = useState<SchedulePeriod | null>(null);
+  const [planningEmployees, setPlanningEmployees] = useState<Employee[]>([]);
   useEffect(() => {
     async function load() {
-      const [emps, asgn, sw, os, sched] = await Promise.all([
-        getEmployees(), getAssignments(), getSwapRequests(), getOpenShifts(), getActiveSchedule()
+      const [emps, asgn, sw, os, sched, planning] = await Promise.all([
+        getEmployees(), getAssignments(), getSwapRequests(), getOpenShifts(), getActiveSchedule(), getPlanningSchedule()
       ]);
-      setEmployees(emps); setAssignments(asgn); setSwaps(sw); setOpenShifts(os); setSchedule(sched);
+      const roster = planning ? await getScheduleEmployees(planning.id) : [];
+      setEmployees(emps); setAssignments(asgn); setSwaps(sw); setOpenShifts(os); setSchedule(sched); setPlanningSchedule(planning); setPlanningEmployees(roster);
       setLoading(false);
     }
     load();
@@ -43,7 +46,7 @@ export default function DashboardPage() {
   if (isManager) {
     return <ManagerDashboard
       employees={employees} assignments={assignments} swaps={swaps}
-      openShifts={openShifts} schedule={schedule} startDate={startDate}
+      openShifts={openShifts} schedule={schedule} planningSchedule={planningSchedule} planningEmployees={planningEmployees} onGrantLateAccess={async employeeId => { if (!planningSchedule) return; await grantLateAvailabilityAccess(planningSchedule.id, employeeId); setPlanningEmployees(await getScheduleEmployees(planningSchedule.id)); }} startDate={startDate}
     />;
   }
   return <EmployeeDashboard
@@ -54,19 +57,25 @@ export default function DashboardPage() {
 
 // ─── Manager Dashboard ────────────────────────────────────────────────────────
 
-function ManagerDashboard({ employees, assignments, swaps, openShifts, schedule, startDate }: {
+function ManagerDashboard({ employees, assignments, swaps, openShifts, schedule, planningSchedule, planningEmployees, onGrantLateAccess, startDate }: {
   employees: Employee[]; assignments: ShiftAssignment[];
   swaps: SwapRequest[]; openShifts: OpenShiftRequest[];
-  schedule: SchedulePeriod | null; startDate: string;
+  schedule: SchedulePeriod | null; planningSchedule: SchedulePeriod | null; planningEmployees: Employee[]; onGrantLateAccess: (employeeId: string) => Promise<void>; startDate: string;
 }) {
   const pendingSwaps = swaps.filter(s => s.status === 'pending').length;
-  const pendingOpen = openShifts.filter(o => o.pickupStatus === 'pending').length;
-  const summary = getDashboardSummary(assignments, employees, startDate, pendingSwaps, pendingOpen);
+  const openPool = openShifts.filter(o => o.status === 'open' || o.status === 'requested').length;
+  const summary = getDashboardSummary(assignments, employees, startDate, pendingSwaps, openPool);
   const coverageWarnings = validateShiftCoverage(assignments, startDate);
   const cycle1Warnings = validate48HourRule(assignments, employees, startDate, 1);
   const cycle2Warnings = validate48HourRule(assignments, employees, startDate, 2);
   const cycle3Warnings = validate48HourRule(assignments, employees, startDate, 3);
   const allHourWarnings = [...cycle1Warnings, ...cycle2Warnings, ...cycle3Warnings];
+  const [showMissed, setShowMissed] = useState(false);
+  const [granting, setGranting] = useState('');
+  const planningDeadline = planningSchedule?.availabilityDeadline ? new Date(planningSchedule.availabilityDeadline) : null;
+  const planningDeadlinePassed = Boolean(planningDeadline && new Date() > planningDeadline);
+  const submittedAvailabilityCount = planningEmployees.filter(employee => employee.availabilitySubmittedAt).length;
+  const missedDeadlineEmployees = planningDeadlinePassed ? planningEmployees.filter(employee => !employee.availabilitySubmittedAt) : [];
 
   // Upcoming shifts today
   const today = new Date().toISOString().split('T')[0];
@@ -81,17 +90,48 @@ function ManagerDashboard({ employees, assignments, swaps, openShifts, schedule,
         </p>
       </div>
 
+      {planningSchedule?.availabilityDeadline && planningDeadline && (
+        <>
+          <Card className="border border-sky-500/25">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-navy-200">Availability deadline</div>
+                <div className="text-xs text-navy-400 mt-1">{formatDate(planningDeadline)} · {planningSchedule.label}</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="text-sm text-navy-200"><span className="text-emerald-300">{submittedAvailabilityCount} submitted</span> / {planningEmployees.length}{planningDeadlinePassed && <span className="ml-3 text-rose-300">{missedDeadlineEmployees.length} missed deadline</span>}</div>
+                {planningDeadlinePassed && <Button size="sm" variant="secondary" onClick={() => setShowMissed(value => !value)}>{showMissed ? 'Hide' : 'View'}</Button>}
+              </div>
+            </div>
+          </Card>
+          {showMissed && planningDeadlinePassed && (
+            <Card>
+              <CardHeader title="Employees who missed the deadline" subtitle="Granting access lets one employee submit availability for this period." />
+              {missedDeadlineEmployees.length === 0 ? <p className="text-sm text-navy-400">Everyone in this period has submitted availability.</p> : (
+                <div className="space-y-2">
+                  {missedDeadlineEmployees.map(employee => (
+                    <div key={employee.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-navy-900 p-3">
+                      <div><p className="text-sm font-medium text-navy-100">{employee.name}</p><p className="text-xs text-navy-400">{employee.email}</p></div>
+                      <Button size="sm" disabled={granting === employee.id} onClick={async () => { setGranting(employee.id); try { await onGrantLateAccess(employee.id); } finally { setGranting(''); } }}>{granting === employee.id ? 'Granting…' : 'Grant re-access'}</Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
+        </>
+      )}
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Total Shifts" value={summary.totalShifts} icon="▦" />
-        <StatCard label="Shortages" value={summary.shiftsWithShortage} icon="⚠" variant={summary.shiftsWithShortage > 0 ? 'danger' : 'success'} sub="shifts under 2 staff" />
-        <StatCard label="Pending Swaps" value={pendingSwaps} icon="⇄" variant={pendingSwaps > 0 ? 'warning' : 'default'} />
-        <StatCard label="Open Shifts" value={pendingOpen} icon="◯" variant={pendingOpen > 0 ? 'warning' : 'default'} sub="awaiting approval" />
+        <DashboardLink to="/schedule"><StatCard label="Total Shifts" value={summary.totalShifts} icon="▦" /></DashboardLink>
+        <DashboardLink to="/schedule"><StatCard label="Shortages" value={summary.shiftsWithShortage} icon="⚠" variant={summary.shiftsWithShortage > 0 ? 'danger' : 'success'} sub="shifts under 2 staff" /></DashboardLink>
+        <DashboardLink to="/swaps"><StatCard label="Pending Swaps" value={pendingSwaps} icon="⇄" variant={pendingSwaps > 0 ? 'warning' : 'default'} /></DashboardLink>
+        <DashboardLink to="/open-shifts"><StatCard label="Open Shift Pool" value={openPool} icon="◯" variant={openPool > 0 ? 'warning' : 'default'} sub="available shifts" /></DashboardLink>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <StatCard label="Under 48h" value={summary.employeesBelowHours} icon="↓" variant={summary.employeesBelowHours > 0 ? 'warning' : 'success'} sub="employees" />
-        <StatCard label="Over 48h" value={summary.employeesAboveHours} icon="↑" variant={summary.employeesAboveHours > 0 ? 'warning' : 'success'} sub="employees" />
-        <StatCard label="Fairness Alerts" value={summary.employeesWithFairnessWarnings} icon="⚖" variant={summary.employeesWithFairnessWarnings > 0 ? 'warning' : 'success'} sub="employees" />
+        <DashboardLink to="/fairness"><StatCard label="Under 48h" value={summary.employeesBelowHours} icon="↓" variant={summary.employeesBelowHours > 0 ? 'warning' : 'success'} sub="employees" /></DashboardLink>
+        <DashboardLink to="/fairness"><StatCard label="Over 48h" value={summary.employeesAboveHours} icon="↑" variant={summary.employeesAboveHours > 0 ? 'warning' : 'success'} sub="employees" /></DashboardLink>
+        <DashboardLink to="/fairness"><StatCard label="Fairness Alerts" value={summary.employeesWithFairnessWarnings} icon="⚖" variant={summary.employeesWithFairnessWarnings > 0 ? 'warning' : 'success'} sub="employees" /></DashboardLink>
       </div>
 
       {/* Warnings */}
@@ -133,7 +173,7 @@ function ManagerDashboard({ employees, assignments, swaps, openShifts, schedule,
       )}
 
       {/* Pending approvals */}
-      {(pendingSwaps + pendingOpen) > 0 && (
+      {(pendingSwaps + openPool) > 0 && (
         <Card>
           <CardHeader title="Pending Approvals" icon="⏳" />
           <div className="space-y-2">
@@ -143,10 +183,10 @@ function ManagerDashboard({ employees, assignments, swaps, openShifts, schedule,
                 <Badge variant="pending">{pendingSwaps} pending</Badge>
               </Link>
             )}
-            {pendingOpen > 0 && (
+            {openPool > 0 && (
               <Link to="/open-shifts" className="flex items-center justify-between p-3 bg-navy-900 rounded-lg hover:bg-navy-700 transition-colors">
-                <div className="text-sm text-navy-200">Open Shift Pickups</div>
-                <Badge variant="pending">{pendingOpen} pending</Badge>
+                <div className="text-sm text-navy-200">Open Shift Pool</div>
+                <Badge variant="pending">{openPool} open</Badge>
               </Link>
             )}
           </div>
@@ -168,6 +208,9 @@ function ManagerDashboard({ employees, assignments, swaps, openShifts, schedule,
   );
 }
 
+function DashboardLink({ to, children }: { to: string; children: React.ReactNode }) {
+  return <Link to={to} className="block rounded-xl transition-transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-brand-400">{children}</Link>;
+}
 // ─── Employee Dashboard ───────────────────────────────────────────────────────
 
 function EmployeeDashboard({ currentUser, employees, assignments, swaps, openShifts, startDate }: {

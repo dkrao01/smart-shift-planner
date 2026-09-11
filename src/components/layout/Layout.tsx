@@ -2,12 +2,14 @@ import React from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { BottomNav } from './BottomNav';
+import { useNavCounts } from '../../hooks/useNavCounts';
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  const navCounts = useNavCounts();
   return (
     <div className="min-h-screen bg-navy-950 flex">
       {/* Desktop sidebar */}
-      <Sidebar />
+      <Sidebar counts={navCounts} />
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-h-screen min-w-0">
@@ -21,7 +23,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Mobile bottom nav */}
-      <BottomNav />
+      <BottomNav counts={navCounts} />
     </div>
   );
 }

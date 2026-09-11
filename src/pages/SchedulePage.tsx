@@ -6,12 +6,12 @@ import { LoadingSpinner, EmptyState, WarningBanner, PageHeader } from '../compon
 import { Button } from '../components/common/Button';
 import { Modal, FormField, Select } from '../components/common/Modal';
 import {
-  getEmployees, getAssignments, getActiveSchedule,
-  addAssignment, removeAssignment, getAvailability
+  getEmployees, getAssignments, getPlanningSchedule, getScheduleEmployees,
+  addAssignment, removeAssignment, getAvailability, getOpenShifts
 } from '../services/dataService';
 import { getScheduleEmployeeOptions, validateShiftCoverage } from '../utils/scheduleUtils';
 import { formatDate, formatDayName, formatShortDate, buildPeriodRange, getCycleDay } from '../utils/dateUtils';
-import type { Availability, Employee, ShiftAssignment, SchedulePeriod, ShiftType } from '../types';
+import type { Availability, Employee, ShiftAssignment, OpenShiftRequest, SchedulePeriod, ShiftType } from '../types';
 
 const SHIFT_TYPES: ShiftType[] = ['day', 'evening', 'night'];
 const SHIFT_ICONS: Record<ShiftType, string> = { day: '☀', evening: '🌆', night: '🌙' };
@@ -25,24 +25,27 @@ export default function SchedulePage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
   const [availability, setAvailability] = useState<Availability[]>([]);
+  const [openShifts, setOpenShifts] = useState<OpenShiftRequest[]>([]);
   const [schedule, setSchedule] = useState<SchedulePeriod | null>(null);
   const [editModal, setEditModal] = useState<{ date: string; shiftType: ShiftType } | null>(null);
   const [addEmpId, setAddEmpId] = useState('');
   const [addHours, setAddHours] = useState<8 | 12 | 16>(8);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [selectedCycle, setSelectedCycle] = useState<1 | 2 | 3>(1);
 
   const isManager = currentUser?.role === 'manager';
 
   async function load() {
-    const [emps, asgn, sched, avail] = await Promise.all([
-      getEmployees(), getAssignments(), getActiveSchedule(), getAvailability()
-    ]);
-    setEmployees(emps); setAssignments(asgn); setSchedule(sched); setAvailability(avail);
+    const sched = await getPlanningSchedule();
+    const [emps, asgn, avail, opens] = sched ? await Promise.all([
+      getScheduleEmployees(sched.id), getAssignments(sched.id), getAvailability(sched.id), getOpenShifts()
+    ]) : [[], [], [], await getOpenShifts()];
+    setEmployees(emps); setAssignments(asgn); setSchedule(sched); setAvailability(avail); setOpenShifts(opens);
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { void load(); const timer = window.setInterval(() => { void load(); }, 5000); return () => window.clearInterval(timer); }, []);
 
   if (loading) return <LoadingSpinner label="Loading schedule…" />;
   if (!schedule) return <EmptyState icon="▦" title="No active schedule" description="Manager has not created a schedule yet." />;
@@ -78,27 +81,47 @@ export default function SchedulePage() {
       .findIndex(a => a.id === assignment.id) > 0;
   }
 
+  function getOpenPoolStatus(assignment: ShiftAssignment) {
+    return openShifts.find(open => open.shiftId === assignment.id && (open.status === 'open' || open.status === 'requested'));
+  }
+
+  function getPickupSource(assignment: ShiftAssignment) {
+    return openShifts.find(open => open.shiftId === assignment.id && open.status === 'filled' && open.pickupEmployeeId === assignment.employeeId);
+  }
+
   function openEditModal(date: string, shiftType: ShiftType) {
     if (!isManager) return;
     setEditModal({ date, shiftType });
     setAddEmpId('');
     setAddHours(8);
+    setSaveError('');
   }
 
   async function handleAddEmployee() {
     if (!editModal || !addEmpId || !schedule) return;
+    const selectedOption = scheduleEmployeeOptions.find(option => option.employee.id === addEmpId);
+    if (!selectedOption?.eligible) {
+      setSaveError('This employee cannot be assigned to a third or non-consecutive shift on the same day.');
+      return;
+    }
     setSaving(true);
-    await addAssignment({
-      scheduleId: schedule.id,
-      date: editModal.date,
-      shiftType: editModal.shiftType,
-      employeeId: addEmpId,
-      hours: addHours,
-      status: 'scheduled',
-    });
-    await load();
-    setSaving(false);
-    setEditModal(null);
+    setSaveError('');
+    try {
+      await addAssignment({
+        scheduleId: schedule.id,
+        date: editModal.date,
+        shiftType: editModal.shiftType,
+        employeeId: addEmpId,
+        hours: addHours,
+        status: 'scheduled',
+      });
+      await load();
+      setEditModal(null);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Could not add this employee. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleRemove(id: string) {
@@ -110,7 +133,7 @@ export default function SchedulePage() {
     <div className="space-y-5">
       <PageHeader
         title="23-Day Schedule"
-        subtitle={schedule.label}
+        subtitle={`Availability-approved shifts for ${schedule.label}`}
         action={
           <div className="flex gap-2">
             <button
@@ -213,11 +236,15 @@ export default function SchedulePage() {
                             {list.map(a => {
                               const emp = employees.find(e => e.id === a.employeeId);
                               const overtime = isOvertimeAssignment(a);
+                              const openPoolStatus = getOpenPoolStatus(a);
+                              const pickupSource = getPickupSource(a);
                               return (
-                                <div key={a.id} className="flex items-center justify-between">
-                                  <span className="text-xs text-navy-200">
+                                <div key={a.id} className="flex items-start justify-between gap-1">
+                                  <span className="text-xs text-navy-200 leading-5">
                                     {emp?.name ?? a.employeeId}
                                     {overtime && <span className="ml-1.5 text-[10px] font-semibold text-amber-300">(Overtime shift)</span>}
+                                    {openPoolStatus && <span className="ml-1.5 text-[10px] font-semibold text-sky-300">(Shift active in Open Pool)</span>}
+                                    {pickupSource && <span className="ml-1.5 text-[10px] font-semibold text-emerald-300">(Picked {employees.find(e => e.id === pickupSource.originalEmployeeId)?.name ?? pickupSource.originalEmployeeId}'s shift from Open Pool)</span>}
                                   </span>
                                   <div className="flex items-center gap-1">
                                     <span className="text-[10px] font-mono text-navy-500">{a.hours}h</span>
@@ -258,6 +285,7 @@ export default function SchedulePage() {
             </>
           }
         >
+          {saveError && <WarningBanner type="error" message={saveError} />}
           {/* Current assignments */}
           <div className="mb-4">
             <p className="text-xs font-mono text-navy-400 mb-2 uppercase tracking-wide">Currently Assigned</p>
@@ -290,7 +318,9 @@ export default function SchedulePage() {
               <option value="">Select employee…</option>
               {scheduleEmployeeOptions.map(option => (
                 <option key={option.employee.id} value={option.employee.id} disabled={!option.eligible}>
-                  {option.employee.name} — {option.reason === 'off'
+                  {option.employee.name} — {option.reason === 'incompatible'
+                    ? `not eligible: already scheduled for ${(option.assignedShiftTypes ?? []).join(' and ')} shift${(option.assignedShiftTypes?.length ?? 0) === 1 ? '' : 's'}`
+                    : option.reason === 'off'
                     ? `WARNING: manager assigned OFF${option.currentShift ? `, also on ${option.currentShift} shift` : ''}`
                     : option.reason === 'assigned'
                     ? `already assigned today to ${option.currentShift} shift`
@@ -302,14 +332,16 @@ export default function SchedulePage() {
               <p className="mt-1.5 text-[11px] text-amber-300">No eligible same-day employees are available for this shift.</p>
             )}
             {scheduleEmployeeOptions.length > 0 && (
-              <p className="mt-1.5 text-[11px] text-amber-300">Warnings are informational. You can still select an OFF employee or someone already assigned to another shift if the manager decides it is necessary.</p>
+              <p className="mt-1.5 text-[11px] text-amber-300">A manager may assign an OFF employee when necessary. An employee may work one shift or two adjacent shifts only: Day to Evening or Evening to Night.</p>
             )}
             {addEmpId && (() => {
               const selectedOption = scheduleEmployeeOptions.find(option => option.employee.id === addEmpId);
               if (!selectedOption) return null;
               return (
                 <p className="mt-1.5 rounded border border-amber-500/30 bg-amber-900/20 px-2 py-1 text-[11px] text-amber-300">
-                  {selectedOption.reason === 'off'
+                  {selectedOption.reason === 'incompatible'
+                    ? `Not eligible: ${selectedOption.employee.name} cannot work a third or non-consecutive shift on the same day.`
+                    : selectedOption.reason === 'off'
                     ? `Warning: manager assigned ${selectedOption.employee.name} OFF on this day.`
                     : selectedOption.reason === 'assigned'
                     ? `Info: ${selectedOption.employee.name} is already assigned to the ${selectedOption.currentShift} shift today.`

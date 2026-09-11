@@ -8,6 +8,9 @@ export interface AppUser {
   email: string;
   role: UserRole;
   employeeId: string;
+  isApproved?: boolean;
+  registrationStatus?: 'pending' | 'approved' | 'rejected';
+  isRealSignup?: boolean;
 }
 
 // ─── Employee ──────────────────────────────────────────────────────────────────
@@ -18,7 +21,13 @@ export interface Employee {
   email: string;
   uid?: string;
   active: boolean;
+  availabilitySubmittedAt?: string;
+  availabilityDeadlineOverride?: boolean;
+  availabilityWave?: number;
+  availabilityApprovedAt?: string;
   joinDate?: string;
+  // Permanent pair identity used for availability-order fairness.
+  availabilityPairIndex?: number;
 }
 
 // ─── Shifts ────────────────────────────────────────────────────────────────────
@@ -68,6 +77,9 @@ export interface SchedulePeriod {
   createdAt: string;
   createdBy: string;
   restDaysPublished?: boolean;
+  availabilityDeadline?: string;
+  sourceScheduleId?: string;
+  availabilityPriority?: number;
 }
 
 export interface ScheduleDay {
@@ -132,6 +144,19 @@ export interface OpenShiftRequest {
   resolvedAt?: string;
   resolvedBy?: string;
   managerNote?: string;
+}
+
+/** An employee's individual application to cover an open shift. */
+export interface OpenShiftPickupRequest {
+  id: string;
+  openShiftId: string;
+  employeeId: string;
+  status: RequestStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  managerNote?: string;
+  validationWarnings: string[];
 }
 
 // ─── Analytics & Summaries ────────────────────────────────────────────────────

@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardHeader } from '../components/common/Card';
+import { addDaysToStr, formatDate } from '../utils/dateUtils';
 import { Badge } from '../components/common/Badge';
 import { LoadingSpinner, PageHeader, WarningBanner } from '../components/common/LoadingSpinner';
 import {
-  getEmployees, getAssignments, getActiveSchedule
+  getEmployees, getAssignments, getPlanningSchedule
 } from '../services/dataService';
 import {
   getEmployeeCycleSummary, getEmployeeFairnessSummary,
@@ -29,7 +30,7 @@ export default function FairnessPage() {
   useEffect(() => {
     async function load() {
       const [emps, asgn, sched] = await Promise.all([
-        getEmployees(), getAssignments(), getActiveSchedule()
+        getEmployees(), getAssignments(), getPlanningSchedule()
       ]);
       setEmployees(emps); setAssignments(asgn); setSchedule(sched);
       setLoading(false);
@@ -42,6 +43,11 @@ export default function FairnessPage() {
   const startDate = schedule?.startDate ?? '';
   const cycleSummaries = getEmployeeCycleSummary(assignments, employees, startDate, selectedCycle);
   const fairnessSummaries = getEmployeeFairnessSummary(assignments, employees, startDate);
+  const cycleRanges = startDate ? ([
+    { cycle: 1, start: addDaysToStr(startDate, 0), end: addDaysToStr(startDate, 7) },
+    { cycle: 2, start: addDaysToStr(startDate, 8), end: addDaysToStr(startDate, 15) },
+    { cycle: 3, start: addDaysToStr(startDate, 16), end: addDaysToStr(startDate, 22) },
+  ] as const) : [];
 
   // For employees, only show their own row
   const displayCycle = isManager ? cycleSummaries : cycleSummaries.filter(s => s.employeeId === myEmpId);
@@ -69,6 +75,17 @@ export default function FairnessPage() {
         </div>
       )}
 
+      {cycleRanges.length > 0 && (
+        <div className="grid gap-2 sm:grid-cols-3">
+          {cycleRanges.map(range => (
+            <div key={range.cycle} className={`rounded-lg border px-3 py-2 text-xs ${selectedCycle === range.cycle ? 'border-brand-500/50 bg-brand-500/10 text-navy-100' : 'border-navy-700 bg-navy-900 text-navy-400'}`}>
+              <div className="font-medium">Cycle {range.cycle}</div>
+              <div className="mt-1 font-mono">{formatDate(range.start, 'dd-MM-yyyy')} to {formatDate(range.end, 'dd-MM-yyyy')}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Cycle hours */}
       <div>
         <h3 className="text-xs font-mono text-navy-500 uppercase tracking-wide mb-3">
@@ -85,7 +102,7 @@ export default function FairnessPage() {
           Shift Type Balance — 23-Day Period (Target: 48h each)
         </h3>
         <p className="text-xs text-navy-600 mb-3">
-          Every employee must complete exactly 48h of Day, Evening, and Night shifts within this 23-day period. The cycle tabs show the separate 48h target for each cycle.
+          Every employee must complete exactly 48h of Day, Evening, and Night shifts within this 23-day period. Consecutive overtime shifts are shown in Schedule but are excluded from these normal roster-hour targets.
         </p>
         <div className="space-y-3">
           {displayFairness.map(f => <FairnessRow key={f.employeeId} summary={f} />)}
